@@ -1,24 +1,35 @@
-function CloneMyVM() {
-    Write-Host "`nThis is a script for making clones in vCenter by Adam Hachem`n"
-    Write-Host "Importing PowerCLI`n"
+function CloneMyVM([string] $ConfigFile) {
+    Write-Host "`nThis is a script for making clones in vCenter by Adam Hachem"
+    
+    if ($ConfigFile) {
+        try {
+            $conf = (Get-Content -Raw -Path $ConfigFile | ConvertFrom-Json)
+        } catch {
+            Write-Error "Failed to read or fetch config file"
+            Write-Error $_
+        }
+        Write-Host "`nUsing config from $ConfigFile"
+    }
+
+    Write-Host "`nImporting PowerCLI`n"
     try {
         Import-Module VMware.PowerCLI -ErrorAction Stop | Out-Null
     } catch {
         Write-Error "Failed to import PowerCLI. Script terminated."
-        exit 1
+        Write-Error $_
     }
-    
-    # Linked clone or full clone switch
-    $switch = Read-Host "Linked clone or full clone? (l/f)"
-    $linked = ($switch -eq "l")
 
     # Check for VIServer connection
     if ($null -eq $global:DefaultVIServer) {
-        Write-Host "`nNo connection to vCenter. Please connect to vCenter." -ForegroundColor Yellow
+        Write-Host "No connection to vCenter. Please connect to vCenter." -ForegroundColor Yellow
         $vserver = Read-Host "Enter the vCenter server name"
         Connect-VIServer -Server $vserver
     }
     Write-Host "Connected to $($global:DefaultVIServer.Name)" -ForegroundColor Green
+
+    # Linked clone or full clone switch
+    $switch = Read-Host "`nLinked clone or full clone? (l/f)"
+    $linked = ($switch -eq "l")
 
     # Function for user selection with validation
     function Get-UserSelection {
@@ -42,31 +53,45 @@ function CloneMyVM() {
         }
     }
 
-    # Ask for the VM to clone
-    Write-Host "`nVM List---" -ForegroundColor Green
-    $vm = Get-UserSelection "Enter the number corresponding to the VM to clone" (Get-VM | Where-Object { $_.PowerState -eq "PoweredOff" })
+    if (-not $conf) {
+        # Ask for the VM to clone
+        Write-Host "`nVM List---" -ForegroundColor Green
+        $vm = Get-UserSelection "Enter the number corresponding to the VM to clone" (Get-VM | Where-Object { $_.PowerState -eq "PoweredOff" })
 
-    # Ask which snapshot to clone from
-    Write-Host "`nSnapshot List for $vm---" -ForegroundColor Green
-    $snapshot = Get-UserSelection "Enter the number corresponding to the snapshot to clone from" (Get-Snapshot -VM $vm)
+        # Ask which snapshot to clone from
+        Write-Host "`nSnapshot List for $vm---" -ForegroundColor Green
+        $snapshot = Get-UserSelection "Enter the number corresponding to the snapshot to clone from" (Get-Snapshot -VM $vm)
 
-    # Ask what ESXi host the new VM should live on
-    Write-Host "`nESXI Host List---" -ForegroundColor Green
-    $vmhost = Get-UserSelection "Enter the number corresponding to the host to clone to" (Get-VMHost)
+        # Ask what ESXi host the new VM should live on
+        Write-Host "`nESXI Host List---" -ForegroundColor Green
+        $vmhost = Get-UserSelection "Enter the number corresponding to the host to clone to" (Get-VMHost)
 
-    # Ask what datastore the new VM should be stored on
-    Write-Host "`nDatastore List---" -ForegroundColor Green
-    $ds = Get-UserSelection "Enter the number corresponding to the datastore to clone to" (Get-Datastore)
-
+        # Ask what datastore the new VM should be stored on
+        Write-Host "`nDatastore List---" -ForegroundColor Green
+        $datastore = Get-UserSelection "Enter the number corresponding to the datastore to clone to" (Get-Datastore)
+    
+    } else {
+        # Load and validate settings
+        try {
+            $vm = Get-VM -Name $conf.vm -ErrorAction Stop
+            $snapshot = Get-Snapshot -VM $vm -Name $conf.snapshot -ErrorAction Stop
+            $vmhost = Get-VMHost -Name $conf.vmhost -ErrorAction Stop
+            $datastore = Get-Datastore -Name $conf.datastore -ErrorAction Stop
+        } catch {
+            Write-Error "Config parameter invalid!"
+            Write-Error $_ -ErrorAction Stop
+        }
+	Write-Host "`nConfig settings validated" -ForegroundColor Green
+    }
     # Make a full clone
     if (-not $linked) {
         $linkedname = "{0}.temp.linked" -f $vm.Name
         # Create temp linked clone
-        $linkedvm = New-VM -LinkedClone -Name $linkedName -VM $vm -ReferenceSnapshot $snapshot -VMHost $vmhost -Datastore $ds
+        $linkedvm = New-VM -LinkedClone -Name $linkedName -VM $vm -ReferenceSnapshot $snapshot -VMHost $vmhost -Datastore $datastore
         $snapshot = New-Snapshot -Name "Base" -VM $linkedvm
         
         $clonename = Read-Host "`nEnter the name of the new full clone"
-        $newvm = New-VM -Name $clonename -VM $linkedvm -VMHost $vmhost -Datastore $ds
+        $newvm = New-VM -Name $clonename -VM $linkedvm -VMHost $vmhost -Datastore $datastore
         
         # Delete temp linked clone
         Remove-VM -VM $linkedvm -DeletePermanently -Confirm:$false
@@ -78,7 +103,7 @@ function CloneMyVM() {
         } else {
             $linkedname = "{0}.linked" -f $vm.Name
         }
-        $newvm = New-VM -LinkedClone -Name $linkedName -VM $vm -ReferenceSnapshot $snapshot -VMHost $vmhost -Datastore $ds
+        $newvm = New-VM -LinkedClone -Name $linkedName -VM $vm -ReferenceSnapshot $snapshot -VMHost $vmhost -Datastore $datastore
         
         Write-Host "Linked clone '$newvm' created" -ForegroundColor Green
     }
